@@ -1,4 +1,5 @@
 import flet as ft
+import math
 
 
 class CalcButton(ft.ElevatedButton):
@@ -49,6 +50,22 @@ class CalculatorApp(ft.Container):
                         ExtraActionButton(text="AC", button_clicked=self.button_clicked),
                         ExtraActionButton(text="+/-", button_clicked=self.button_clicked),
                         ExtraActionButton(text="%", button_clicked=self.button_clicked),
+                        ActionButton(text="x²", button_clicked=self.button_clicked),
+                    ]
+                ),
+                ft.Row(
+                    controls=[
+                        ExtraActionButton(text="sin", button_clicked=self.button_clicked),
+                        ExtraActionButton(text="cos", button_clicked=self.button_clicked),
+                        ExtraActionButton(text="tan", button_clicked=self.button_clicked),
+                        ActionButton(text="x/y", button_clicked=self.button_clicked),
+                    ]
+                ),
+                ft.Row(
+                    controls=[
+                        ExtraActionButton(text="x!", button_clicked=self.button_clicked),
+                        ExtraActionButton(text="√", button_clicked=self.button_clicked),
+                        ExtraActionButton(text="-x", button_clicked=self.button_clicked),
                         ActionButton(text="/", button_clicked=self.button_clicked),
                     ]
                 ),
@@ -82,47 +99,103 @@ class CalculatorApp(ft.Container):
                         DigitButton(text=".", button_clicked=self.button_clicked),
                         ActionButton(text="=", button_clicked=self.button_clicked),
                     ]
-                ),
+                )
             ]
         )
 
     def button_clicked(self, e):
         data = e.control.data
         print(f"Button clicked with data = {data, type(data)}")
-        if self.result.value == "Error" or data == "AC":
-            self.result.value = "0"
+
+        try:
+            if self.result.value == "Error" or data == "AC":
+                self.result.value = "0"
+                self.reset()
+
+            elif data in ("1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "."):
+                if self.result.value == "0" or self.new_operand == True:
+                    self.result.value = data
+                    self.new_operand = False
+                else:
+                    self.result.value = self.result.value + data
+
+            elif data in ("+", "-", "*", "/"):
+                result_val = float(self.result.value)
+                self.result.value = str(self.calculate(self.operand1, result_val, self.operator))
+                self.operator = data
+                if self.result.value == "Error":
+                    self.operand1 = 0
+                else:
+                    self.operand1 = float(self.result.value)
+                self.new_operand = True
+
+            elif data == "=":
+                result_val = float(self.result.value)
+                self.result.value = str(self.calculate(self.operand1, result_val, self.operator))
+                self.reset()
+
+            elif data == "%":
+                result_val = float(self.result.value)
+                self.result.value = str(result_val / 100)
+                self.reset()
+
+            elif data == "+/-":
+                result_val = float(self.result.value)
+                if result_val > 0:
+                    self.result.value = "-" + self.result.value
+                elif result_val < 0:
+                    self.result.value = str(self.format_number(abs(result_val)))
+
+            elif data in ("sin", "cos", "tan"):
+                result_val = float(self.result.value)
+                angle_in_radians = math.radians(result_val)
+                if data == "sin":
+                    self.result.value = str(self.format_number(math.sin(angle_in_radians)))
+                elif data == "cos":
+                    self.result.value = str(self.format_number(math.cos(angle_in_radians)))
+                elif data == "tan":
+                    self.result.value = str(self.format_number(math.tan(angle_in_radians)))
+                self.new_operand = True
+
+            elif data == "√":
+                result_val = float(self.result.value)
+                if result_val < 0:
+                    self.result.value = "Error"
+                else:
+                    self.result.value = str(self.format_number(math.sqrt(result_val)))
+                self.new_operand = True
+
+            elif data == "-x":
+                result_val = float(self.result.value)
+                self.result.value = str(self.format_number(-1 * result_val))
+                self.new_operand = True
+
+            elif data == "x/y":
+                result_val = float(self.result.value)
+                self.result.value = str(self.calculate(self.operand1, result_val, self.operator))
+                self.operator = "/"
+                if self.result.value == "Error":
+                    self.operand1 = 0
+                else:
+                    self.operand1 = float(self.result.value)
+                self.new_operand = True
+
+            elif data == "x²":
+                result_val = float(self.result.value)
+                self.result.value = str(self.format_number(result_val ** 2))
+                self.new_operand = True
+
+            elif data == "x!":
+                result_val = float(self.result.value)
+                if result_val < 0 or result_val != int(result_val):
+                    self.result.value = "Error"
+                else:
+                    self.result.value = str(self.format_number(math.factorial(int(result_val))))
+                self.new_operand = True
+
+        except (ValueError, OverflowError):
+            self.result.value = "Error"
             self.reset()
-
-        elif data in ("1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "."):
-            if self.result.value == "0" or self.new_operand == True:
-                self.result.value = data
-                self.new_operand = False
-            else:
-                self.result.value = str(self.result.value) + str(data)
-
-        elif data in ("+", "-", "*", "/"):
-            self.result.value = str(self.calculate(self.operand1, float(str(self.result.value)), self.operator))
-            self.operator = data
-            if self.result.value == "Error":
-                self.operand1 = "0"
-            else:
-                self.operand1 = float(self.result.value)
-            self.new_operand = True
-
-        elif data in ("="):
-            self.result.value = str(self.calculate(self.operand1, float(str(self.result.value)), self.operator))
-            self.reset()
-
-        elif data in ("%"):
-            self.result.value = str(float(str(self.result.value)) / 100)
-            self.reset()
-
-        elif data in ("+/-"):
-            if float(str(self.result.value)) > 0:
-                self.result.value = "-" + str(self.result.value)
-
-            elif float(str(self.result.value)) < 0:
-                self.result.value = str(self.format_number(abs(float(str(self.result.value)))))
 
         self.update()
 
@@ -133,16 +206,12 @@ class CalculatorApp(ft.Container):
             return num
 
     def calculate(self, operand1, operand2, operator):
-
         if operator == "+":
             return self.format_number(operand1 + operand2)
-
         elif operator == "-":
             return self.format_number(operand1 - operand2)
-
         elif operator == "*":
             return self.format_number(operand1 * operand2)
-
         elif operator == "/":
             if operand2 == 0:
                 return "Error"
