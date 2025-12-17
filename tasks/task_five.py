@@ -5,6 +5,18 @@ AREA_URL = "https://www.jma.go.jp/bosai/common/const/area.json"
 FORECAST_URL_TEMPLATE = "https://www.jma.go.jp/bosai/forecast/data/forecast/{code}.json"
 WEATHER_ICON_TEMPLATE = "https://www.jma.go.jp/bosai/forecast/img/{code}.svg"
 
+# 地域グループの定義（ExpansionTile用）
+REGION_GROUPS = {
+    "北海道": ["016000", "017000"],
+    "東北": ["020000", "030000", "040000", "050000", "060000", "070000"],
+    "関東": ["080000", "090000", "100000", "110000", "120000", "130000", "140000"],
+    "中部": ["150000", "160000", "170000", "180000", "190000", "200000", "210000", "220000", "230000"],
+    "近畿": ["240000", "250000", "260000", "270000", "280000", "290000", "300000"],
+    "中国": ["310000", "320000", "330000", "340000", "350000"],
+    "四国": ["360000", "370000", "380000", "390000"],
+    "九州・沖縄": ["400000", "410000", "420000", "430000", "440000", "450000", "460100", "471000"],
+}
+
 # 天気コードから天気名へのマッピング（簡易版）
 WEATHER_CODE_MAP = {
     "100": "晴れ",
@@ -76,7 +88,7 @@ def pick_area_entry(series: dict, area_code: str, area_name: str) -> dict:
 
 
 def create_forecast_view(forecast: list, area_name: str, area_code: str) -> ft.Column:
-    """天気予報を画像付きで表示するビューを作成"""
+    """天気予報をListTileを使って表示するビューを作成"""
     if not forecast or len(forecast) == 0:
         return ft.Column([ft.Text("予報データがありません")])
 
@@ -134,56 +146,57 @@ def create_forecast_view(forecast: list, area_name: str, area_code: str) -> ft.C
         time_label = time_defines[i].split("T")[0] if i < len(time_defines) else f"Day {i+1}"
         wind_text = winds[i] if i < len(winds) else "情報なし"
         pop_text = f"{pops[i]}%" if i < len(pops) and pops[i] else "-"
-        if len(wind_text) > 20:
-            wind_text = f"{wind_text[:20]}..."
+        if len(wind_text) > 30:
+            wind_text = f"{wind_text[:30]}..."
 
         # 天気アイコン
-        weather_icon = None
         if weather_code:
             icon_url = WEATHER_ICON_TEMPLATE.format(code=weather_code)
             weather_name = WEATHER_CODE_MAP.get(weather_code, weather_text)
             weather_icon = ft.Image(
                 src=icon_url,
-                width=100,
-                height=100,
+                width=60,
+                height=60,
                 fit=ft.ImageFit.CONTAIN,
             )
         else:
             weather_name = weather_text
-            weather_icon = ft.Text("☁️", size=100)
+            weather_icon = ft.Text("☁️", size=40)
 
-        # 予報カード
-        card = ft.Card(
-            content=ft.Container(
-                content=ft.Column(
-                    [
-                        ft.Text(time_label, size=16, weight=ft.FontWeight.BOLD),
-                        weather_icon,
-                        ft.Text(weather_name, size=14, text_align=ft.TextAlign.CENTER),
-                        ft.Divider(),
-                        ft.Row(
-                            [
-                                ft.Text("💧", size=16),
-                                ft.Text(f"降水確率: {pop_text}", size=12),
-                            ],
-                            spacing=5,
-                        ),
-                        ft.Row(
-                            [
-                                ft.Text("🌬️", size=16),
-                                ft.Text(f"風: {wind_text[:20]}...", size=12),
-                            ],
-                            spacing=5,
-                        ),
-                    ],
-                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                    spacing=8,
+        # ExpansionTileを使って詳細情報を折りたたみ可能に
+        expansion_tile = ft.ExpansionTile(
+            title=ft.Text(time_label, weight=ft.FontWeight.BOLD),
+            subtitle=ft.Text(weather_name),
+            leading=weather_icon,
+            affinity=ft.TileAffinity.LEADING,
+            initially_expanded=i == 0,  # 最初のアイテムだけ展開
+            controls=[
+                ft.ListTile(
+                    leading=ft.Text("💧", size=20),
+                    title=ft.Text("降水確率"),
+                    trailing=ft.Text(pop_text, size=16, weight=ft.FontWeight.BOLD),
                 ),
-                padding=16,
-                width=250,
-            ),
+                ft.ListTile(
+                    leading=ft.Text("🌬️", size=20),
+                    title=ft.Text("風"),
+                    subtitle=ft.Text(wind_text, size=12),
+                ),
+                ft.ListTile(
+                    leading=ft.Text("📝", size=20),
+                    title=ft.Text("詳細"),
+                    subtitle=ft.Text(weather_text if len(weather_text) <= 50 else f"{weather_text[:50]}...", size=12),
+                ),
+            ],
         )
-        forecast_cards.append(card)
+
+        forecast_cards.append(
+            ft.Card(
+                content=ft.Container(
+                    content=expansion_tile,
+                    padding=8,
+                ),
+            )
+        )
 
     return ft.Column(forecast_cards, spacing=16, scroll=ft.ScrollMode.AUTO)
 
@@ -191,29 +204,82 @@ def create_forecast_view(forecast: list, area_name: str, area_code: str) -> ft.C
 def main(page: ft.Page) -> None:
     page.title = "JMA 天気予報ビューワー"
     page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
-    page.padding = 24
+    page.padding = 0
     page.theme_mode = ft.ThemeMode.LIGHT
-    page.scroll = ft.ScrollMode.AUTO
 
-    area_dropdown = ft.Dropdown(
-        label="地域を選択",
-        width=360,
-        options=[],
-        disabled=True,
-    )
-    fetch_button = ft.ElevatedButton("天気予報を取得", disabled=True)
     status_text = ft.Text("")
     spinner = ft.ProgressRing(visible=False)
-
-    # 予報表示用のコンテナ
-    forecast_container = ft.Container()
-
+    forecast_container = ft.Container(expand=True)
     area_name_map: dict[str, str] = {}
+    selected_code: str = ""
+    selected_name: str = ""
+
+    # 選択された地域を表示するテキスト
+    selected_area_text = ft.Text("地域を選択してください", size=16)
 
     def set_status(message: str, *, error: bool = False) -> None:
         status_text.value = message
         status_text.color = "red" if error else "black"
         page.update()
+
+    def on_area_click(code: str, name: str):
+        """地域が選択された時の処理"""
+        nonlocal selected_code, selected_name
+        selected_code = code
+        selected_name = name
+        selected_area_text.value = f"選択中: {name}"
+        page.update()
+
+    def on_fetch(_):
+        if not selected_code:
+            set_status("地域を選択してください", error=True)
+            return
+        spinner.visible = True
+        set_status("天気予報を取得中...")
+        forecast_container.content = None
+        page.update()
+        try:
+            forecast = fetch_forecast(selected_code)
+            forecast_container.content = create_forecast_view(forecast, selected_name, selected_code)
+            set_status("天気予報を取得しました")
+        except Exception as exc:
+            forecast_container.content = ft.Text(f"エラー: {exc}", color="red")
+            set_status(f"天気予報の取得に失敗: {exc}", error=True)
+        finally:
+            spinner.visible = False
+            page.update()
+
+    def create_region_tiles(area_map: dict) -> list:
+        """ExpansionTileを使って地域をグループ化"""
+        tiles = []
+
+        for region_name, codes in REGION_GROUPS.items():
+            region_areas = []
+            for code in codes:
+                if code in area_map:
+                    meta = area_map[code]
+                    name = meta.get("name", code)
+                    # ListTileを使って各地域を表示
+                    region_areas.append(
+                        ft.ListTile(
+                            leading=ft.Icon(ft.Icons.LOCATION_ON, size=20),
+                            title=ft.Text(name, size=14),
+                            on_click=lambda e, c=code, n=name: on_area_click(c, n),
+                        )
+                    )
+
+            if region_areas:
+                # ExpansionTileで地域グループを作成
+                tiles.append(
+                    ft.ExpansionTile(
+                        title=ft.Text(region_name, weight=ft.FontWeight.BOLD),
+                        subtitle=ft.Text(f"{len(region_areas)}地域", size=12),
+                        affinity=ft.TileAffinity.PLATFORM,
+                        controls=region_areas,
+                    )
+                )
+
+        return tiles
 
     def load_areas() -> None:
         nonlocal area_name_map
@@ -222,22 +288,16 @@ def main(page: ft.Page) -> None:
         page.update()
         try:
             area_map = fetch_area_map()
-            sorted_items = sorted(area_map.items(), key=lambda item: item[1].get("name", ""))
-            area_dropdown.options = [
-                ft.dropdown.Option(
-                    key=meta.get("code", code),
-                    text=meta.get("name", code)
-                )
-                for code, meta in sorted_items
-                if isinstance(meta, dict)
-            ]
             area_name_map = {
-                meta.get("code", code): meta.get("name", code)
+                code: meta.get("name", code)
                 for code, meta in area_map.items()
                 if isinstance(meta, dict)
             }
-            area_dropdown.disabled = False
-            fetch_button.disabled = False
+
+            # ExpansionTileを使った地域選択パネルを作成
+            region_tiles = create_region_tiles(area_map)
+            region_panel.controls = region_tiles
+
             set_status("地域情報を読み込みました")
         except Exception as exc:
             set_status(f"地域情報の読み込みに失敗: {exc}", error=True)
@@ -245,42 +305,63 @@ def main(page: ft.Page) -> None:
             spinner.visible = False
             page.update()
 
-    def on_fetch(_):
-        code = area_dropdown.value
-        if not code:
-            set_status("地域を選択してください", error=True)
-            return
-        spinner.visible = True
-        set_status("天気予報を取得中...")
-        forecast_container.content = None
+    # NavigationRailで画面切り替え
+    current_view = ft.Ref[ft.Container]()
+
+    def on_nav_change(e):
+        index = e.control.selected_index
+        if index == 0:  # 天気予報ビュー
+            main_content.content = forecast_view
+        elif index == 1:  # 地域選択ビュー
+            main_content.content = region_selection_view
         page.update()
-        try:
-            forecast = fetch_forecast(code)
-            area_name = area_name_map.get(code, "Unknown")
-            forecast_container.content = create_forecast_view(forecast, area_name, code)
-            set_status("天気予報を取得しました")
-        except Exception as exc:
-            forecast_container.content = ft.Text(
-                f"エラー: {exc}",
-                color="red"
-            )
-            set_status(f"天気予報の取得に失敗: {exc}", error=True)
-        finally:
-            spinner.visible = False
-            page.update()
 
-    fetch_button.on_click = on_fetch
+    rail = ft.NavigationRail(
+        selected_index=0,
+        label_type=ft.NavigationRailLabelType.ALL,
+        min_width=100,
+        min_extended_width=200,
+        destinations=[
+            ft.NavigationRailDestination(
+                icon=ft.Icons.CLOUD_OUTLINED,
+                selected_icon=ft.Icons.CLOUD,
+                label="天気予報",
+            ),
+            ft.NavigationRailDestination(
+                icon=ft.Icons.MAP_OUTLINED,
+                selected_icon=ft.Icons.MAP,
+                label="地域選択",
+            ),
+        ],
+        on_change=on_nav_change,
+    )
 
-    page.add(
-        ft.Column(
+    # 地域選択パネル（ExpansionTile使用）
+    region_panel = ft.Column([], scroll=ft.ScrollMode.AUTO, spacing=0)
+
+    region_selection_view = ft.Container(
+        content=ft.Column(
             [
-                ft.Container(
-                    content=ft.Row(
-                        [area_dropdown, fetch_button, spinner],
-                        spacing=16,
-                        alignment=ft.MainAxisAlignment.CENTER,
-                    ),
-                    padding=ft.padding.only(bottom=20),
+                ft.Text("🗾 地域を選択", size=20, weight=ft.FontWeight.BOLD),
+                ft.Divider(),
+                region_panel,
+            ],
+            scroll=ft.ScrollMode.AUTO,
+        ),
+        padding=20,
+        expand=True,
+    )
+
+    # 天気予報ビュー
+    fetch_button = ft.ElevatedButton("天気予報を取得", on_click=on_fetch, icon=ft.Icons.REFRESH)
+
+    forecast_view = ft.Container(
+        content=ft.Column(
+            [
+                ft.Row(
+                    [selected_area_text, fetch_button, spinner],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    spacing=16,
                 ),
                 status_text,
                 ft.Divider(),
@@ -288,6 +369,24 @@ def main(page: ft.Page) -> None:
             ],
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             spacing=10,
+            expand=True,
+            scroll=ft.ScrollMode.AUTO,
+        ),
+        padding=20,
+        expand=True,
+    )
+
+    # メインコンテンツ
+    main_content = ft.Container(content=forecast_view, expand=True)
+
+    page.add(
+        ft.Row(
+            [
+                rail,
+                ft.VerticalDivider(width=1),
+                main_content,
+            ],
+            expand=True,
         )
     )
 
