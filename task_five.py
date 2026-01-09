@@ -1,9 +1,12 @@
 import requests
 import flet as ft
+import sqlite3
+from datetime import datetime
 
 AREA_URL = "https://www.jma.go.jp/bosai/common/const/area.json"
 FORECAST_URL_TEMPLATE = "https://www.jma.go.jp/bosai/forecast/data/forecast/{code}.json"
 WEATHER_ICON_TEMPLATE = "https://www.jma.go.jp/bosai/forecast/img/{code}.svg"
+DB_PATH = "weather.db"
 
 # 地域グループの定義（ExpansionTile用）
 REGION_GROUPS = {
@@ -13,7 +16,7 @@ REGION_GROUPS = {
     "中部": ["150000", "160000", "170000", "180000", "190000", "200000", "210000", "220000", "230000"],
     "近畿": ["240000", "250000", "260000", "270000", "280000", "290000", "300000"],
     "中国": ["310000", "320000", "330000", "340000", "350000"],
-    "四国": ["360000", "370000", "380000", "390000"],
+    "四国": ["360000", "370000", "380000"],
     "九州・沖縄": ["400000", "410000", "420000", "430000", "440000", "450000", "460100", "471000"],
 }
 
@@ -52,6 +55,57 @@ WEATHER_CODE_MAP = {
     "413": "雪のち曇り",
     "414": "雪のち雨",
 }
+
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS weather_forecast (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            area_code TEXT,
+            area_name TEXT,
+            date TEXT,
+            weather_code TEXT,
+            weather_text TEXT,
+            wind_text TEXT,
+            pop TEXT,
+            created_at TEXT
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS area (
+            code TEXT PRIMARY KEY,
+            name TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def save_forecast_to_db(area_code, area_name, date, weather_code, weather_text, wind_text, pop):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO weather_forecast (area_code, area_name, date, weather_code, weather_text, wind_text, pop, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (area_code, area_name, date, weather_code, weather_text, wind_text, pop, datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def get_forecast_from_db(area_code, area_name):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT date, weather_code, weather_text, wind_text, pop FROM weather_forecast
+        WHERE area_code=? AND area_name=?
+        ORDER BY date DESC
+        LIMIT 3
+    """, (area_code, area_name))
+    rows = c.fetchall()
+    conn.close()
+    return rows
 
 
 def fetch_area_map() -> dict:
@@ -202,6 +256,11 @@ def create_forecast_view(forecast: list, area_name: str, area_code: str) -> ft.C
 
 
 def main(page: ft.Page) -> None:
+    def set_status(message: str, *, error: bool = False) -> None:
+        status_text.value = message
+        status_text.color = "red" if error else "black"
+        page.update()
+
     page.title = "JMA 天気予報ビューワー"
     page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
     page.padding = 0
@@ -217,17 +276,76 @@ def main(page: ft.Page) -> None:
     # 選択された地域を表示するテキスト
     selected_area_text = ft.Text("地域を選択してください", size=16)
 
-    def set_status(message: str, *, error: bool = False) -> None:
-        status_text.value = message
-        status_text.color = "red" if error else "black"
+    # 日付選択用Dropdown
+    date_options = ft.Dropdown(options=[], label="日付を選択", width=150)
+
+    def update_date_options():
+        # DBから選択中エリアの全日付を取得
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT DISTINCT date FROM weather_forecast WHERE area_code=? AND area_name=? ORDER BY date DESC", (selected_code, selected_name))
+        dates = [row[0] for row in c.fetchall()]
+        conn.close()
+        date_options.options = [ft.dropdown.Option(date) for date in dates]
+        if dates:
+            date_options.value = dates[0]
         page.update()
 
+    def on_date_change(e):
+        # 選択した日付の予報をDBから取得して表示
+        date = date_options.value
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT date, weather_code, weather_text, wind_text, pop FROM weather_forecast WHERE area_code=? AND area_name=? AND date=?", (selected_code, selected_name, date))
+        rows = c.fetchall()
+        conn.close()
+        if rows:
+            cards = []
+            cards.append(ft.Text(f"📍 {selected_name} の天気予報 ({date})", size=24, weight=ft.FontWeight.BOLD))
+            cards.append(ft.Divider())
+            for row in rows:
+                date, weather_code, weather_text, wind_text, pop = row
+                weather_name = WEATHER_CODE_MAP.get(weather_code, weather_text)
+                icon_url = WEATHER_ICON_TEMPLATE.format(code=weather_code) if weather_code else None
+                weather_icon = ft.Image(src=icon_url, width=60, height=60, fit=ft.ImageFit.CONTAIN) if icon_url else ft.Text("☁️", size=40)
+                expansion_tile = ft.ExpansionTile(
+                    title=ft.Text(date, weight=ft.FontWeight.BOLD),
+                    subtitle=ft.Text(weather_name),
+                    leading=weather_icon,
+                    affinity=ft.TileAffinity.LEADING,
+                    initially_expanded=False,
+                    controls=[
+                        ft.ListTile(
+                            leading=ft.Text("💧", size=20),
+                            title=ft.Text("降水確率"),
+                            trailing=ft.Text(f"{pop}%", size=16, weight=ft.FontWeight.BOLD),
+                        ),
+                        ft.ListTile(
+                            leading=ft.Text("🌬️", size=20),
+                            title=ft.Text("風"),
+                            subtitle=ft.Text(wind_text, size=12),
+                        ),
+                        ft.ListTile(
+                            leading=ft.Text("📝", size=20),
+                            title=ft.Text("詳細"),
+                            subtitle=ft.Text(weather_text if len(weather_text) <= 50 else f"{weather_text[:50]}...", size=12),
+                        ),
+                    ],
+                )
+                cards.append(ft.Card(content=ft.Container(content=expansion_tile, padding=8)))
+            forecast_container.content = ft.Column(cards, spacing=16, scroll=ft.ScrollMode.AUTO)
+        else:
+            forecast_container.content = ft.Text("選択した日付の予報データがありません")
+        page.update()
+
+    date_options.on_change = on_date_change
+
     def on_area_click(code: str, name: str):
-        """地域が選択された時の処理"""
         nonlocal selected_code, selected_name
         selected_code = code
         selected_name = name
         selected_area_text.value = f"選択中: {name}"
+        update_date_options()
         page.update()
 
     def on_fetch(_):
@@ -240,8 +358,70 @@ def main(page: ft.Page) -> None:
         page.update()
         try:
             forecast = fetch_forecast(selected_code)
-            forecast_container.content = create_forecast_view(forecast, selected_name, selected_code)
-            set_status("天気予報を取得しました")
+            # DB保存処理
+            series = forecast[0].get("timeSeries", [])
+            if series:
+                time_series = series[0]
+                area = pick_area_entry(time_series, selected_code, selected_name)
+                weathers = area.get("weathers", [])
+                weather_codes = area.get("weatherCodes", [])
+                time_defines = time_series.get("timeDefines", [])
+                winds = area.get("winds", [])
+                pops = []
+                if len(series) > 1:
+                    pop_series = series[1]
+                    pop_area = pick_area_entry(pop_series, selected_code, selected_name)
+                    pops = pop_area.get("pops", [])
+                item_count = max(len(weather_codes), len(weathers), len(time_defines), len(winds), len(pops))
+                max_items = min(item_count, 3)
+                for i in range(max_items):
+                    date = time_defines[i].split("T")[0] if i < len(time_defines) else f"Day {i+1}"
+                    weather_code = weather_codes[i] if i < len(weather_codes) else None
+                    weather_text = weathers[i] if i < len(weathers) else "情報なし"
+                    wind_text = winds[i] if i < len(winds) else "情報なし"
+                    pop_text = pops[i] if i < len(pops) and pops[i] else "-"
+                    save_forecast_to_db(selected_code, selected_name, date, weather_code, weather_text, wind_text, pop_text)
+            update_date_options()
+            # DBから取得して表示
+            db_rows = get_forecast_from_db(selected_code, selected_name)
+            if db_rows:
+                cards = []
+                cards.append(ft.Text(f"📍 {selected_name} の天気予報 (DB)", size=24, weight=ft.FontWeight.BOLD))
+                cards.append(ft.Divider())
+                for row in db_rows:
+                    date, weather_code, weather_text, wind_text, pop = row
+                    weather_name = WEATHER_CODE_MAP.get(weather_code, weather_text)
+                    icon_url = WEATHER_ICON_TEMPLATE.format(code=weather_code) if weather_code else None
+                    weather_icon = ft.Image(src=icon_url, width=60, height=60, fit=ft.ImageFit.CONTAIN) if icon_url else ft.Text("☁️", size=40)
+                    expansion_tile = ft.ExpansionTile(
+                        title=ft.Text(date, weight=ft.FontWeight.BOLD),
+                        subtitle=ft.Text(weather_name),
+                        leading=weather_icon,
+                        affinity=ft.TileAffinity.LEADING,
+                        initially_expanded=False,
+                        controls=[
+                            ft.ListTile(
+                                leading=ft.Text("💧", size=20),
+                                title=ft.Text("降水確率"),
+                                trailing=ft.Text(f"{pop}%", size=16, weight=ft.FontWeight.BOLD),
+                            ),
+                            ft.ListTile(
+                                leading=ft.Text("🌬️", size=20),
+                                title=ft.Text("風"),
+                                subtitle=ft.Text(wind_text, size=12),
+                            ),
+                            ft.ListTile(
+                                leading=ft.Text("📝", size=20),
+                                title=ft.Text("詳細"),
+                                subtitle=ft.Text(weather_text if len(weather_text) <= 50 else f"{weather_text[:50]}...", size=12),
+                            ),
+                        ],
+                    )
+                    cards.append(ft.Card(content=ft.Container(content=expansion_tile, padding=8)))
+                forecast_container.content = ft.Column(cards, spacing=16, scroll=ft.ScrollMode.AUTO)
+            else:
+                forecast_container.content = ft.Text("DBに予報データがありません")
+            set_status("天気予報を取得・保存しました")
         except Exception as exc:
             forecast_container.content = ft.Text(f"エラー: {exc}", color="red")
             set_status(f"天気予報の取得に失敗: {exc}", error=True)
@@ -288,14 +468,15 @@ def main(page: ft.Page) -> None:
         page.update()
         try:
             area_map = fetch_area_map()
+            save_area_to_db(area_map)  # DBへ保存
             area_name_map = {
                 code: meta.get("name", code)
                 for code, meta in area_map.items()
                 if isinstance(meta, dict)
             }
-
-            # ExpansionTileを使った地域選択パネルを作成
-            region_tiles = create_region_tiles(area_map)
+            # DBから取得したエリア情報でUI生成
+            db_area_map = get_area_map_from_db()
+            region_tiles = create_region_tiles(db_area_map)
             region_panel.controls = region_tiles
 
             set_status("地域情報を読み込みました")
@@ -352,45 +533,91 @@ def main(page: ft.Page) -> None:
         expand=True,
     )
 
-    # 天気予報ビュー
     fetch_button = ft.ElevatedButton("天気予報を取得", on_click=on_fetch, icon=ft.Icons.REFRESH)
 
+    # UI改善: ステータスバーを画面上部に配置
+    status_bar = ft.Container(
+        content=status_text,
+        bgcolor="#FFF3CD" if status_text.color == "black" else "#F8D7DA",
+        padding=10,
+        alignment=ft.alignment.center,
+        border_radius=8,
+        margin=ft.margin.only(bottom=10),
+        visible=True,
+    )
+
+    # 地域選択サイドバー
+    region_sidebar = ft.Container(
+        content=ft.Column([
+            ft.Text("🗾 地域を選択", size=18, weight=ft.FontWeight.BOLD),
+            ft.Divider(),
+            region_panel,
+        ], scroll=ft.ScrollMode.AUTO),
+        width=220,
+        padding=10,
+        bgcolor="#F0F4FF",
+        border_radius=8,
+        expand=False,
+    )
+
+    # 天気予報ビュー（UI改善）
+    fetch_row = ft.Row([
+        selected_area_text,
+        fetch_button,
+        spinner,
+    ], alignment=ft.MainAxisAlignment.START, spacing=16)
+
     forecast_view = ft.Container(
-        content=ft.Column(
-            [
-                ft.Row(
-                    [selected_area_text, fetch_button, spinner],
-                    alignment=ft.MainAxisAlignment.CENTER,
-                    spacing=16,
-                ),
-                status_text,
-                ft.Divider(),
-                forecast_container,
-            ],
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            spacing=10,
-            expand=True,
-            scroll=ft.ScrollMode.AUTO,
-        ),
+        content=ft.Column([
+            status_bar,
+            fetch_row,
+            ft.Divider(),
+            ft.Container(
+                content=date_options,
+                alignment=ft.alignment.center_left,
+                margin=ft.margin.only(bottom=10),
+            ),
+            forecast_container,
+        ],
+        horizontal_alignment=ft.CrossAxisAlignment.START,
+        spacing=10,
+        expand=True,
+        scroll=ft.ScrollMode.AUTO),
         padding=20,
         expand=True,
     )
 
-    # メインコンテンツ
+    # メインレイアウト（サイドバー＋メイン）
     main_content = ft.Container(content=forecast_view, expand=True)
-
     page.add(
-        ft.Row(
-            [
-                rail,
-                ft.VerticalDivider(width=1),
-                main_content,
-            ],
-            expand=True,
-        )
+        ft.Row([
+            region_sidebar,
+            ft.VerticalDivider(width=1),
+            main_content,
+        ], expand=True)
     )
 
+    init_db()
     load_areas()
+
+
+def save_area_to_db(area_map):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    for code, meta in area_map.items():
+        name = meta.get("name", code)
+        c.execute("REPLACE INTO area (code, name) VALUES (?, ?)", (code, name))
+    conn.commit()
+    conn.close()
+
+
+def get_area_map_from_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT code, name FROM area")
+    area_map = {code: {"name": name} for code, name in c.fetchall()}
+    conn.close()
+    return area_map
 
 
 if __name__ == "__main__":
